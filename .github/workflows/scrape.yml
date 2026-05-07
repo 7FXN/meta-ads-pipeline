@@ -1,0 +1,94 @@
+name: Ad Intelligence Pipeline
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'   # Every Monday at 9 AM UTC
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: 'Apps to scrape (comma-separated)'
+        required: false
+        default: 'Calm,Duolingo,Nibble'
+      country:
+        description: 'Country code'
+        required: false
+        default: 'US'
+      limit:
+        description: 'Ads per app'
+        required: false
+        default: '3'
+      rank_by:
+        description: 'Ranking strategy'
+        required: false
+        default: 'combined'
+        type: choice
+        options:
+          - combined
+          - age
+          - order
+          - impressions
+          - copies
+      run_creative:
+        description: 'Generate AI creative brief after scraping'
+        required: false
+        default: 'true'
+        type: boolean
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Write .env from secrets
+        run: |
+          echo "AIRTABLE_TOKEN=${{ secrets.AIRTABLE_TOKEN }}"           >> .env
+          echo "AIRTABLE_BASE_ID=${{ secrets.AIRTABLE_BASE_ID }}"       >> .env
+          echo "AIRTABLE_TABLE_ID=${{ secrets.AIRTABLE_TABLE_ID }}"     >> .env
+          echo "NOTION_TOKEN=${{ secrets.NOTION_TOKEN }}"               >> .env
+          echo "NOTION_DATABASE_ID=${{ secrets.NOTION_DATABASE_ID }}"   >> .env
+          echo "NOTION_CREATIVES_DB_ID=${{ secrets.NOTION_CREATIVES_DB_ID }}" >> .env
+          echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}"               >> .env
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}"           >> .env
+
+      - name: Scrape ads + sync to Airtable & Notion
+        run: |
+          APPS="${{ github.event.inputs.apps || 'Calm,Duolingo,Nibble' }}"
+          COUNTRY="${{ github.event.inputs.country || 'US' }}"
+          LIMIT="${{ github.event.inputs.limit || '3' }}"
+          RANK_BY="${{ github.event.inputs.rank_by || 'combined' }}"
+          IFS=',' read -ra APP_LIST <<< "$APPS"
+          for app in "${APP_LIST[@]}"; do
+            app=$(echo "$app" | xargs)   # trim whitespace
+            echo "── Scraping: $app ──"
+            python3 meta_ads_scraper.py \
+              --country "$COUNTRY" \
+              --limit "$LIMIT" \
+              --rank-by "$RANK_BY" \
+              "$app"
+          done
+
+      - name: Generate AI creative brief
+        if: ${{ github.event.inputs.run_creative != 'false' }}
+        run: python3 creative_generator.py --mix 3
+
+      - name: Upload scraped images as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraped-ads-${{ github.run_number }}
+          path: ads_data/
+          retention-days: 14

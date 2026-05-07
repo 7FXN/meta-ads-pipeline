@@ -1,0 +1,27 @@
+# Credentials
+.env
+
+# Scraped data and downloaded images (generated at runtime)
+ads_data/
+
+# Course materials (not part of the automation project)
+Lecture/
+Context/
+Screenshots/
+Task*.md
+Ad_Diagnostic_Report.md
+campaign_analysis_report.md
+benchmark_vs_creative.json
+meta-ads-scraper-skill.md
+CLAUDE.md
+debug*.png
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# macOS
+.DS_Store
