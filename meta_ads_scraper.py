@@ -100,6 +100,7 @@ def airtable_upload(ads: list[dict], competitor: str, country: str):
 
         fields = {
             "Competitor":     record_name,
+            "Page Name":      ad.get("page_name") or "",
             "Ad Copy":        ad_copy,
             "Start Date":     fmt_date,
             "Library ID":     lib_id,
