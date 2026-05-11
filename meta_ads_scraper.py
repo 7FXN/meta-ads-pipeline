@@ -83,10 +83,33 @@ def airtable_upload(ads: list[dict], competitor: str, country: str):
         _name_helpers = None
 
     uploaded = 0
+    skipped = 0
     for ad in ads:
-        raw_date = ad.get("start_date") or ""
-        ad_copy  = ad.get("ad_copy") or ""
-        lib_id   = ad.get("library_id") or ""
+        raw_date  = ad.get("start_date") or ""
+        ad_copy   = ad.get("ad_copy") or ""
+        lib_id    = ad.get("library_id") or ""
+        page_name = (ad.get("page_name") or "").lower()
+
+        # Skip records missing required fields
+        if not lib_id:
+            print(f"  [Airtable] Skipping ad — missing Library ID")
+            skipped += 1
+            continue
+        if not raw_date:
+            print(f"  [Airtable] Skipping ad {lib_id} — missing Start Date")
+            skipped += 1
+            continue
+        if not ad_copy:
+            print(f"  [Airtable] Skipping ad {lib_id} — missing Ad Copy")
+            skipped += 1
+            continue
+
+        # Skip ads unrelated to the competitor
+        competitor_lower = competitor.lower()
+        if page_name and not any(w in page_name for w in competitor_lower.split()):
+            print(f"  [Airtable] Skipping ad {lib_id} — page '{ad.get('page_name')}' not related to '{competitor}'")
+            skipped += 1
+            continue
 
         if _name_helpers:
             _analyze_hook, _build_name, _fmt_dmy = _name_helpers
@@ -119,7 +142,8 @@ def airtable_upload(ads: list[dict], competitor: str, country: str):
         else:
             print(f"  [Airtable] Failed to upload ad {ad.get('library_id')}: {resp.text[:100]}")
 
-    print(f"  [Airtable] Uploaded {uploaded}/{len(ads)} records")
+    total = uploaded + skipped
+    print(f"  [Airtable] Uploaded {uploaded}/{total} records ({skipped} skipped)")
 
 ADS_LIBRARY_URL = (
     "https://www.facebook.com/ads/library/"
@@ -350,9 +374,8 @@ async def scrape_competitor(page, competitor: str, search_query: str, page_patte
 
     filtered = [a for a in ads if matches_page(a)]
     if not filtered and ads:
-        # Fall back to all results if no exact match (e.g. page not advertising much)
-        print(f"  No exact page match — keeping all {len(ads)} results")
-        filtered = ads
+        print(f"  No exact page match — 0 ads kept (use --page-id to target a specific page)")
+        return []
 
     # Rank ads according to chosen strategy
     if rank_by == "combined":
