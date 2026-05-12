@@ -28,6 +28,15 @@ on:
           - order
           - impressions
           - copies
+      filter:
+        description: 'Creative format filter'
+        required: false
+        default: 'static'
+        type: choice
+        options:
+          - static
+          - video
+          - combined
       run_creative:
         description: 'Generate AI creative brief after scraping'
         required: false
@@ -71,6 +80,7 @@ jobs:
           COUNTRY="${{ github.event.inputs.country || 'US' }}"
           LIMIT="${{ github.event.inputs.limit || '3' }}"
           RANK_BY="${{ github.event.inputs.rank_by || 'combined' }}"
+          FILTER="${{ github.event.inputs.filter || 'static' }}"
           IFS=',' read -ra APP_LIST <<< "$APPS"
           for app in "${APP_LIST[@]}"; do
             app=$(echo "$app" | xargs)   # trim whitespace
@@ -79,6 +89,7 @@ jobs:
               --country "$COUNTRY" \
               --limit "$LIMIT" \
               --rank-by "$RANK_BY" \
+              --filter "$FILTER" \
               "$app"
           done
 

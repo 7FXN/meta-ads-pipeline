@@ -18,6 +18,10 @@ Usage:
               order       first ads shown on the search results page — Meta's own relevance ranking
               impressions highest estimated impressions first — broadest reach
               copies      most identical ad copies running simultaneously — scaling signal
+--filter:   which creative format to keep — one of:
+              static      (default) image/static ads only
+              video       video ads only
+              combined    all formats
 """
 
 import asyncio
@@ -129,6 +133,7 @@ def airtable_upload(ads: list[dict], competitor: str, country: str):
             "Library ID":     lib_id,
             "Ad Library URL": ad_url,
             "Country":        country,
+            "Ad Type":        ad.get("ad_type") or "static",
         }
 
         # Attach image by URL — Airtable fetches and caches it
@@ -244,6 +249,7 @@ EXTRACTION_JS = """
 
 
 RANK_BY_CHOICES = ("combined", "age", "order", "impressions", "copies")
+FILTER_CHOICES  = ("static", "video", "combined")
 
 
 def parse_date_sort_key(date_str: str) -> tuple:
@@ -351,7 +357,7 @@ async def download_image(url: str, dest: Path):
         return False
 
 
-async def scrape_competitor(page, competitor: str, search_query: str, page_patterns: list, limit: int = 6, country: str = "US", page_id: str = None, rank_by: str = "age") -> list[dict]:
+async def scrape_competitor(page, competitor: str, search_query: str, page_patterns: list, limit: int = 6, country: str = "US", page_id: str = None, rank_by: str = "age", filter_type: str = "static") -> list[dict]:
     if page_id:
         url = ADS_LIBRARY_PAGE_ID_URL.format(page_id=page_id)
     else:
@@ -445,13 +451,27 @@ async def scrape_competitor(page, competitor: str, search_query: str, page_patte
             except Exception as e:
                 print(f"    [detail] Error fetching {ad['library_id']}: {e}")
 
-    # Drop ads that still have no image — they are likely video or carousel ads
-    image_ads = [a for a in top if a.get("image_url")]
-    skipped = len(top) - len(image_ads)
-    if skipped:
-        print(f"  Dropped {skipped} non-image ad(s) after detail check")
+    # Classify and filter by format
+    for ad in top:
+        ad["ad_type"] = "static" if ad.get("image_url") else "video"
 
-    return image_ads
+    if filter_type == "static":
+        result = [a for a in top if a["ad_type"] == "static"]
+        dropped = len(top) - len(result)
+        if dropped:
+            print(f"  Dropped {dropped} video ad(s) (--filter static)")
+    elif filter_type == "video":
+        result = [a for a in top if a["ad_type"] == "video"]
+        dropped = len(top) - len(result)
+        if dropped:
+            print(f"  Dropped {dropped} static ad(s) (--filter video)")
+    else:  # combined
+        result = top
+        videos = sum(1 for a in top if a["ad_type"] == "video")
+        statics = len(top) - videos
+        print(f"  Keeping all {len(top)} ads ({statics} static, {videos} video)")
+
+    return result
 
 
 def parse_args():
@@ -460,6 +480,7 @@ def parse_args():
     country = "US"
     page_id = None
     rank_by = "combined"
+    filter_type = "static"
     apps = []
     i = 0
     while i < len(args):
@@ -480,29 +501,37 @@ def parse_args():
                 sys.exit(1)
             rank_by = val
             i += 2
+        elif args[i] == "--filter" and i + 1 < len(args):
+            val = args[i + 1].lower()
+            if val not in FILTER_CHOICES:
+                print(f"Unknown --filter '{val}'. Choose from: {', '.join(FILTER_CHOICES)}")
+                sys.exit(1)
+            filter_type = val
+            i += 2
         else:
             apps.append(args[i])
             i += 1
-    return apps, limit, country, page_id, rank_by
+    return apps, limit, country, page_id, rank_by, filter_type
 
 
 async def main():
-    apps, limit, country, page_id, rank_by = parse_args()
+    apps, limit, country, page_id, rank_by, filter_type = parse_args()
 
     if not apps:
-        print("Usage: python3 meta_ads_scraper.py [--country XX] [--limit N] [--page-id ID] [--rank-by STRATEGY] \"App Name\" ...")
+        print("Usage: python3 meta_ads_scraper.py [--country XX] [--limit N] [--page-id ID] [--rank-by STRATEGY] [--filter FORMAT] \"App Name\" ...")
         print("Examples:")
         print('  python3 meta_ads_scraper.py "Trivia Crack"')
         print('  python3 meta_ads_scraper.py --country ALL "Trivia Crack"')
         print('  python3 meta_ads_scraper.py --page-id 328627523855071 "Calm"')
         print('  python3 meta_ads_scraper.py --rank-by impressions "Duolingo"')
-        print('  python3 meta_ads_scraper.py --rank-by copies "Duolingo"')
-        print('  python3 meta_ads_scraper.py --rank-by order "Duolingo"')
+        print('  python3 meta_ads_scraper.py --filter video "Dressly"')
+        print('  python3 meta_ads_scraper.py --filter combined "Dressly"')
         print(f"\n--rank-by choices: {', '.join(RANK_BY_CHOICES)}  (default: combined)")
+        print(f"--filter choices:  {', '.join(FILTER_CHOICES)}  (default: static)")
         sys.exit(0)
 
     print("=== Meta Ads Library Scraper ===")
-    print(f"Apps: {', '.join(apps)}  |  country: {country}  |  limit: {limit} per app  |  rank-by: {rank_by}\n")
+    print(f"Apps: {', '.join(apps)}  |  country: {country}  |  limit: {limit} per app  |  rank-by: {rank_by}  |  filter: {filter_type}\n")
 
     all_results = {}
 
@@ -532,6 +561,7 @@ async def main():
                     country=country,
                     page_id=page_id if len(apps) == 1 else None,
                     rank_by=rank_by,
+                    filter_type=filter_type,
                 )
                 app_dir = OUTPUT_DIR / app.replace(" ", "_")
                 app_dir.mkdir(exist_ok=True)
