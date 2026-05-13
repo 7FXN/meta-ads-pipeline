@@ -58,7 +58,7 @@ def load_env():
     return env
 
 
-def airtable_upload(ads: list[dict], competitor: str, country: str):
+def airtable_upload(ads: list[dict], competitor: str, country: str, search_by: str = "page"):
     env = load_env()
     token = env.get("AIRTABLE_TOKEN")
     base_id = env.get("AIRTABLE_BASE_ID")
@@ -111,12 +111,13 @@ def airtable_upload(ads: list[dict], competitor: str, country: str):
             skipped += 1
             continue
 
-        # Skip ads unrelated to the competitor
-        competitor_lower = competitor.lower()
-        if page_name and not any(w in page_name for w in competitor_lower.split()):
-            print(f"  [Airtable] Skipping ad {lib_id} — page '{ad.get('page_name')}' not related to '{competitor}'")
-            skipped += 1
-            continue
+        # Skip ads unrelated to the competitor (page mode only — keyword mode keeps all)
+        if search_by == "page":
+            competitor_lower = competitor.lower()
+            if page_name and not any(w in page_name for w in competitor_lower.split()):
+                print(f"  [Airtable] Skipping ad {lib_id} — page '{ad.get('page_name')}' not related to '{competitor}'")
+                skipped += 1
+                continue
 
         if _name_helpers:
             _analyze_hook, _build_name, _fmt_dmy = _name_helpers
@@ -602,7 +603,7 @@ async def main():
                             print(f"    Image {i+1} saved: {img_path.name}")
 
                 all_results[app] = ads
-                airtable_upload(ads, competitor=app, country=country)
+                airtable_upload(ads, competitor=app, country=country, search_by=search_by)
                 # Publish analysis to Notion
                 try:
                     subprocess.run(
