@@ -18,10 +18,13 @@ Usage:
               order       first ads shown on the search results page — Meta's own relevance ranking
               impressions highest estimated impressions first — broadest reach
               copies      most identical ad copies running simultaneously — scaling signal
---filter:   which creative format to keep — one of:
+--filter:     which creative format to keep — one of:
               static      (default) image/static ads only
               video       video ads only
               combined    all formats
+--search-by:  how to search the Ads Library — one of:
+              page        (default) search by advertiser page name
+              keyword     search by keywords across ad copy text
 """
 
 import asyncio
@@ -154,6 +157,11 @@ ADS_LIBRARY_URL = (
     "?active_status=active&ad_type=all&country={country}"
     "&q={query}&search_type=page"
 )
+ADS_LIBRARY_KEYWORD_URL = (
+    "https://www.facebook.com/ads/library/"
+    "?active_status=active&ad_type=all&country={country}"
+    "&q={query}&search_type=keyword_unordered"
+)
 ADS_LIBRARY_PAGE_ID_URL = (
     "https://www.facebook.com/ads/library/"
     "?active_status=active&ad_type=all&country=ALL"
@@ -247,8 +255,9 @@ EXTRACTION_JS = """
 """
 
 
-RANK_BY_CHOICES = ("combined", "age", "order", "impressions", "copies")
-FILTER_CHOICES  = ("static", "video", "combined")
+RANK_BY_CHOICES  = ("combined", "age", "order", "impressions", "copies")
+FILTER_CHOICES   = ("static", "video", "combined")
+SEARCH_BY_CHOICES = ("page", "keyword")
 
 
 def parse_date_sort_key(date_str: str) -> tuple:
@@ -356,9 +365,11 @@ async def download_image(url: str, dest: Path):
         return False
 
 
-async def scrape_competitor(page, competitor: str, search_query: str, page_patterns: list, limit: int = 6, country: str = "US", page_id: str = None, rank_by: str = "age", filter_type: str = "static") -> list[dict]:
+async def scrape_competitor(page, competitor: str, search_query: str, page_patterns: list, limit: int = 6, country: str = "US", page_id: str = None, rank_by: str = "age", filter_type: str = "static", search_by: str = "page") -> list[dict]:
     if page_id:
         url = ADS_LIBRARY_PAGE_ID_URL.format(page_id=page_id)
+    elif search_by == "keyword":
+        url = ADS_LIBRARY_KEYWORD_URL.format(query=search_query.replace(" ", "+"), country=country)
     else:
         url = ADS_LIBRARY_URL.format(query=search_query.replace(" ", "+"), country=country)
     print(f"\n[{competitor}] {url}")
@@ -372,15 +383,20 @@ async def scrape_competitor(page, competitor: str, search_query: str, page_patte
 
     ads = await page.evaluate(EXTRACTION_JS)
 
-    # Keep only ads from the target advertiser page
-    def matches_page(ad):
-        name = (ad.get("page_name") or "").lower()
-        return any(p.lower() in name for p in page_patterns)
+    if search_by == "keyword":
+        # Keyword mode — keep all results, no page name filter
+        filtered = ads
+        print(f"  Found {len(filtered)} ads matching keyword '{search_query}'")
+    else:
+        # Page mode — keep only ads from the target advertiser page
+        def matches_page(ad):
+            name = (ad.get("page_name") or "").lower()
+            return any(p.lower() in name for p in page_patterns)
 
-    filtered = [a for a in ads if matches_page(a)]
-    if not filtered and ads:
-        print(f"  No exact page match — 0 ads kept (use --page-id to target a specific page)")
-        return []
+        filtered = [a for a in ads if matches_page(a)]
+        if not filtered and ads:
+            print(f"  No exact page match — 0 ads kept (use --page-id to target a specific page)")
+            return []
 
     # Rank ads according to chosen strategy
     if rank_by == "combined":
@@ -480,6 +496,7 @@ def parse_args():
     page_id = None
     rank_by = "combined"
     filter_type = "static"
+    search_by = "page"
     apps = []
     i = 0
     while i < len(args):
@@ -507,30 +524,38 @@ def parse_args():
                 sys.exit(1)
             filter_type = val
             i += 2
+        elif args[i] == "--search-by" and i + 1 < len(args):
+            val = args[i + 1].lower()
+            if val not in SEARCH_BY_CHOICES:
+                print(f"Unknown --search-by '{val}'. Choose from: {', '.join(SEARCH_BY_CHOICES)}")
+                sys.exit(1)
+            search_by = val
+            i += 2
         else:
             apps.append(args[i])
             i += 1
-    return apps, limit, country, page_id, rank_by, filter_type
+    return apps, limit, country, page_id, rank_by, filter_type, search_by
 
 
 async def main():
-    apps, limit, country, page_id, rank_by, filter_type = parse_args()
+    apps, limit, country, page_id, rank_by, filter_type, search_by = parse_args()
 
     if not apps:
-        print("Usage: python3 meta_ads_scraper.py [--country XX] [--limit N] [--page-id ID] [--rank-by STRATEGY] [--filter FORMAT] \"App Name\" ...")
+        print("Usage: python3 meta_ads_scraper.py [--country XX] [--limit N] [--page-id ID] [--rank-by STRATEGY] [--filter FORMAT] [--search-by METHOD] \"App Name\" ...")
         print("Examples:")
         print('  python3 meta_ads_scraper.py "Trivia Crack"')
         print('  python3 meta_ads_scraper.py --country ALL "Trivia Crack"')
         print('  python3 meta_ads_scraper.py --page-id 328627523855071 "Calm"')
         print('  python3 meta_ads_scraper.py --rank-by impressions "Duolingo"')
         print('  python3 meta_ads_scraper.py --filter video "Dressly"')
-        print('  python3 meta_ads_scraper.py --filter combined "Dressly"')
-        print(f"\n--rank-by choices: {', '.join(RANK_BY_CHOICES)}  (default: combined)")
-        print(f"--filter choices:  {', '.join(FILTER_CHOICES)}  (default: static)")
+        print('  python3 meta_ads_scraper.py --search-by keyword "capsule wardrobe"')
+        print(f"\n--rank-by choices:   {', '.join(RANK_BY_CHOICES)}  (default: combined)")
+        print(f"--filter choices:    {', '.join(FILTER_CHOICES)}  (default: static)")
+        print(f"--search-by choices: {', '.join(SEARCH_BY_CHOICES)}  (default: page)")
         sys.exit(0)
 
     print("=== Meta Ads Library Scraper ===")
-    print(f"Apps: {', '.join(apps)}  |  country: {country}  |  limit: {limit} per app  |  rank-by: {rank_by}  |  filter: {filter_type}\n")
+    print(f"Apps: {', '.join(apps)}  |  country: {country}  |  limit: {limit} per app  |  rank-by: {rank_by}  |  filter: {filter_type}  |  search-by: {search_by}\n")
 
     all_results = {}
 
@@ -561,6 +586,7 @@ async def main():
                     page_id=page_id if len(apps) == 1 else None,
                     rank_by=rank_by,
                     filter_type=filter_type,
+                    search_by=search_by,
                 )
                 app_dir = OUTPUT_DIR / app.replace(" ", "_")
                 app_dir.mkdir(exist_ok=True)

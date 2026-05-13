@@ -37,6 +37,14 @@ on:
           - static
           - video
           - combined
+      search_by:
+        description: 'Search method'
+        required: false
+        default: 'page'
+        type: choice
+        options:
+          - page
+          - keyword
       run_creative:
         description: 'Generate AI creative brief after scraping'
         required: false
@@ -81,6 +89,7 @@ jobs:
           LIMIT="${{ github.event.inputs.limit || '3' }}"
           RANK_BY="${{ github.event.inputs.rank_by || 'combined' }}"
           FILTER="${{ github.event.inputs.filter || 'static' }}"
+          SEARCH_BY="${{ github.event.inputs.search_by || 'page' }}"
           IFS=',' read -ra APP_LIST <<< "$APPS"
           for app in "${APP_LIST[@]}"; do
             app=$(echo "$app" | xargs)   # trim whitespace
@@ -90,6 +99,7 @@ jobs:
               --limit "$LIMIT" \
               --rank-by "$RANK_BY" \
               --filter "$FILTER" \
+              --search-by "$SEARCH_BY" \
               "$app"
           done
 
