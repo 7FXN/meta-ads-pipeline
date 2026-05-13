@@ -137,6 +137,7 @@ def airtable_upload(ads: list[dict], competitor: str, country: str, search_by: s
             "Library ID":     lib_id,
             "Ad Library URL": ad_url,
             "Country":        country,
+            "Scraped At":     scraped_at,
         }
 
         # Attach image by URL — Airtable fetches and caches it
