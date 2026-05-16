@@ -1,6 +1,5 @@
 """
 Meta Ads Intelligence Pipeline — GUI
-Run this file in PyCharm to get a graphical interface for the scraper.
 """
 
 import subprocess
@@ -9,36 +8,62 @@ import threading
 import tkinter as tk
 from tkinter import scrolledtext, ttk
 from pathlib import Path
+from datetime import datetime
 
 SCRIPT_DIR = Path(__file__).parent
+_running = False
 
 
-def run_command(args: list, log: scrolledtext.ScrolledText, on_done=None):
-    """Run a subprocess and stream output to the log widget."""
+def ts():
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def run_command(label, args, log, all_buttons):
+    global _running
+    if _running:
+        return
+
+    def set_buttons(state):
+        for b in all_buttons:
+            b.config(state=state)
+
     def target():
+        global _running
+        _running = True
+        set_buttons("disabled")
+
         log.config(state="normal")
-        log.insert(tk.END, f"\n$ {' '.join(args)}\n", "cmd")
+        log.insert(tk.END, f"\n[{ts()}] ▶ {label}\n", "header")
+        log.insert(tk.END, f"$ python3 {' '.join(args)}\n", "cmd")
+        log.insert(tk.END, "─" * 60 + "\n", "sep")
         log.see(tk.END)
+
         try:
             proc = subprocess.Popen(
-                [sys.executable] + args,
-                cwd=SCRIPT_DIR,
+                [sys.executable] + [str(SCRIPT_DIR / args[0])] + args[1:],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
             for line in proc.stdout:
-                log.insert(tk.END, line)
+                tag = "error" if any(w in line.lower() for w in ["error", "traceback", "failed", "✗"]) \
+                      else "success" if any(w in line.lower() for w in ["✓", "uploaded", "created", "done"]) \
+                      else "normal"
+                log.insert(tk.END, line, tag)
                 log.see(tk.END)
                 log.update_idletasks()
             proc.wait()
-            status = "✓ Done" if proc.returncode == 0 else f"✗ Exit code {proc.returncode}"
-            log.insert(tk.END, f"{status}\n", "status")
+            result = f"[{ts()}] ✓ Finished\n" if proc.returncode == 0 else f"[{ts()}] ✗ Exit code {proc.returncode}\n"
+            tag = "success" if proc.returncode == 0 else "error"
+            log.insert(tk.END, "─" * 60 + "\n", "sep")
+            log.insert(tk.END, result, tag)
         except Exception as e:
-            log.insert(tk.END, f"Error: {e}\n", "error")
+            log.insert(tk.END, f"[{ts()}] Error: {e}\n", "error")
+
         log.config(state="disabled")
-        if on_done:
-            on_done()
+        log.see(tk.END)
+        _running = False
+        log.after(0, lambda: set_buttons("normal"))
 
     threading.Thread(target=target, daemon=True).start()
 
@@ -46,100 +71,136 @@ def run_command(args: list, log: scrolledtext.ScrolledText, on_done=None):
 def build_gui():
     root = tk.Tk()
     root.title("Meta Ads Intelligence Pipeline")
-    root.resizable(True, True)
+    root.geometry("860x720")
+    root.configure(bg="#2b2b2b")
 
-    # ── Inputs ──────────────────────────────────────────────────────────────
-    frame_inputs = ttk.LabelFrame(root, text="Scraper Settings", padding=10)
-    frame_inputs.grid(row=0, column=0, padx=12, pady=8, sticky="ew")
-    root.columnconfigure(0, weight=1)
+    all_buttons = []
 
-    labels = ["App / Keyword", "Country", "Limit", "Rank By", "Filter", "Search By"]
-    for i, lbl in enumerate(labels):
-        ttk.Label(frame_inputs, text=lbl).grid(row=i, column=0, sticky="w", pady=3)
+    # ── Scraper settings ─────────────────────────────────────────────────────
+    frm_top = tk.Frame(root, bg="#2b2b2b")
+    frm_top.pack(fill="x", padx=12, pady=(10, 4))
 
-    entry_app     = ttk.Entry(frame_inputs, width=30)
-    entry_country = ttk.Entry(frame_inputs, width=10)
-    spin_limit    = ttk.Spinbox(frame_inputs, from_=1, to=50, width=8)
-    combo_rank    = ttk.Combobox(frame_inputs, values=["combined","age","order","impressions","copies"], width=14, state="readonly")
-    combo_filter  = ttk.Combobox(frame_inputs, values=["static","video","combined"], width=14, state="readonly")
-    combo_search  = ttk.Combobox(frame_inputs, values=["page","keyword"], width=14, state="readonly")
+    frm_left = tk.LabelFrame(frm_top, text=" Scraper Settings ", bg="#3c3f41",
+                              fg="#bbbbbb", padx=10, pady=8)
+    frm_left.pack(side="left", fill="both", expand=True)
 
-    entry_app.insert(0, "Duolingo")
-    entry_country.insert(0, "US")
-    spin_limit.set(5)
-    combo_rank.set("combined")
-    combo_filter.set("static")
-    combo_search.set("page")
+    def lbl(parent, text):
+        return tk.Label(parent, text=text, bg="#3c3f41", fg="#bbbbbb", anchor="w", width=13)
 
-    widgets = [entry_app, entry_country, spin_limit, combo_rank, combo_filter, combo_search]
-    for i, w in enumerate(widgets):
-        w.grid(row=i, column=1, sticky="ew", padx=(8, 0), pady=3)
-    frame_inputs.columnconfigure(1, weight=1)
+    def entry(parent, default, width=18):
+        e = tk.Entry(parent, width=width, bg="#45494a", fg="#ffffff",
+                     insertbackground="white", relief="flat", bd=4)
+        e.insert(0, default)
+        return e
 
-    # ── Buttons ─────────────────────────────────────────────────────────────
-    frame_btns = ttk.Frame(root, padding=(12, 0, 12, 8))
-    frame_btns.grid(row=1, column=0, sticky="ew")
+    def combo(parent, values, default):
+        c = ttk.Combobox(parent, values=values, state="readonly", width=16)
+        c.set(default)
+        return c
 
-    btn_scrape   = ttk.Button(frame_btns, text="▶  Scrape Ads")
-    btn_creative = ttk.Button(frame_btns, text="✦  Generate Creative Brief")
-    btn_notion   = ttk.Button(frame_btns, text="↑  Sync to Notion")
-    btn_clear    = ttk.Button(frame_btns, text="Clear Log")
+    style = ttk.Style()
+    style.configure("Dark.TCombobox", fieldbackground="#45494a", background="#45494a", foreground="#ffffff")
 
-    btn_scrape.grid(row=0, column=0, padx=4, pady=4)
-    btn_creative.grid(row=0, column=1, padx=4, pady=4)
-    btn_notion.grid(row=0, column=2, padx=4, pady=4)
-    btn_clear.grid(row=0, column=3, padx=4, pady=4)
+    rows = [
+        ("App / Keyword", entry(frm_left, "Duolingo")),
+        ("Country",       entry(frm_left, "US", 8)),
+        ("Limit",         entry(frm_left, "5", 8)),
+        ("Rank By",       combo(frm_left, ["combined","age","order","impressions","copies"], "combined")),
+        ("Filter",        combo(frm_left, ["static","video","combined"], "static")),
+        ("Search By",     combo(frm_left, ["page","keyword"], "page")),
+    ]
+    for i, (lbl_text, widget) in enumerate(rows):
+        lbl(frm_left, lbl_text).grid(row=i, column=0, sticky="w", pady=3)
+        widget.grid(row=i, column=1, sticky="ew", padx=(8, 0), pady=3)
+    frm_left.columnconfigure(1, weight=1)
 
-    # ── Log ─────────────────────────────────────────────────────────────────
-    log = scrolledtext.ScrolledText(root, height=24, width=80, state="disabled",
-                                    font=("Courier New", 11), bg="#1e1e1e", fg="#d4d4d4",
-                                    insertbackground="white")
-    log.grid(row=2, column=0, padx=12, pady=(0, 12), sticky="nsew")
-    root.rowconfigure(2, weight=1)
+    entry_app, entry_country, entry_limit, combo_rank, combo_filter, combo_search = \
+        [w for _, w in rows]
 
-    log.tag_config("cmd",    foreground="#569cd6")
-    log.tag_config("status", foreground="#4ec9b0")
-    log.tag_config("error",  foreground="#f44747")
+    # ── Button panel ─────────────────────────────────────────────────────────
+    frm_right = tk.LabelFrame(frm_top, text=" Commands ", bg="#3c3f41",
+                               fg="#bbbbbb", padx=10, pady=8)
+    frm_right.pack(side="left", fill="y", padx=(8, 0))
 
-    # ── Actions ─────────────────────────────────────────────────────────────
-    def set_buttons(state):
-        for b in [btn_scrape, btn_creative, btn_notion]:
-            b.config(state=state)
+    def btn(parent, text, color, cmd):
+        b = tk.Button(parent, text=text, bg=color, fg="white", relief="flat",
+                      activebackground=color, activeforeground="white",
+                      padx=8, pady=6, width=24, anchor="w", command=cmd)
+        b.pack(fill="x", pady=3)
+        all_buttons.append(b)
+        return b
 
-    def on_scrape():
+    # will be defined after log widget
+    def get_scrape_args():
         apps = [a.strip() for a in entry_app.get().split(",") if a.strip()]
-        if not apps:
-            return
-        set_buttons("disabled")
-        args = ["meta_ads_scraper.py",
-                "--country", entry_country.get().strip() or "US",
-                "--limit",   str(int(spin_limit.get())),
-                "--rank-by", combo_rank.get(),
-                "--filter",  combo_filter.get(),
-                "--search-by", combo_search.get()] + apps
-        run_command(args, log, on_done=lambda: root.after(0, lambda: set_buttons("normal")))
+        return ["meta_ads_scraper.py",
+                "--country",   entry_country.get().strip() or "US",
+                "--limit",     entry_limit.get().strip() or "5",
+                "--rank-by",   combo_rank.get(),
+                "--filter",    combo_filter.get(),
+                "--search-by", combo_search.get()] + (apps or ["Duolingo"])
 
-    def on_creative():
-        set_buttons("disabled")
-        run_command(["creative_generator.py", "--mix", "3"], log,
-                    on_done=lambda: root.after(0, lambda: set_buttons("normal")))
+    # placeholder lambdas — filled after log is created
+    scrape_btn   = btn(frm_right, "▶  Scrape Ads",               "#0078d4", lambda: None)
+    notion_btn   = btn(frm_right, "↑  Sync → Notion",             "#5c2d91", lambda: None)
+    rename_btn   = btn(frm_right, "✎  Rename All Notion Pages",   "#5c2d91", lambda: None)
+    creative_btn = btn(frm_right, "✦  Generate Creative Brief",   "#107c10", lambda: None)
+    creative2_btn= btn(frm_right, "✦  Brief for App (field above)","#107c10", lambda: None)
+    airtable_btn = btn(frm_right, "⟳  Airtable Updater",          "#c65c1a", lambda: None)
+    dryryn_btn   = btn(frm_right, "⟳  Airtable Dry Run",          "#c65c1a", lambda: None)
+    clear_btn    = tk.Button(frm_right, text="⊘  Clear Terminal",
+                             bg="#555555", fg="white", relief="flat",
+                             padx=8, pady=6, width=24, anchor="w")
+    clear_btn.pack(fill="x", pady=(12, 3))
 
-    def on_notion():
-        set_buttons("disabled")
-        app = entry_app.get().split(",")[0].strip()
-        args = ["notion_publisher.py", app] if app else ["notion_publisher.py"]
-        run_command(args, log, on_done=lambda: root.after(0, lambda: set_buttons("normal")))
+    # ── Terminal ─────────────────────────────────────────────────────────────
+    frm_term = tk.LabelFrame(root, text=" Terminal ", bg="#2b2b2b",
+                              fg="#bbbbbb", padx=6, pady=6)
+    frm_term.pack(fill="both", expand=True, padx=12, pady=(4, 12))
 
-    def on_clear():
-        log.config(state="normal")
-        log.delete("1.0", tk.END)
-        log.config(state="disabled")
+    log = scrolledtext.ScrolledText(frm_term, state="disabled",
+                                    font=("Courier New", 11),
+                                    bg="#1e1e1e", fg="#d4d4d4",
+                                    insertbackground="white",
+                                    relief="flat", bd=0)
+    log.pack(fill="both", expand=True)
 
-    btn_scrape.config(command=on_scrape)
-    btn_creative.config(command=on_creative)
-    btn_notion.config(command=on_notion)
-    btn_clear.config(command=on_clear)
+    log.tag_config("header",  foreground="#569cd6", font=("Courier New", 11, "bold"))
+    log.tag_config("cmd",     foreground="#808080")
+    log.tag_config("sep",     foreground="#444444")
+    log.tag_config("success", foreground="#4ec9b0")
+    log.tag_config("error",   foreground="#f44747")
+    log.tag_config("normal",  foreground="#d4d4d4")
 
+    # ── Wire up buttons ───────────────────────────────────────────────────────
+    def rc(label, args):
+        run_command(label, args, log, all_buttons)
+
+    scrape_btn.config(   command=lambda: rc("Scrape Ads", get_scrape_args()))
+    notion_btn.config(   command=lambda: rc("Sync → Notion",
+                             ["notion_publisher.py"] +
+                             ([entry_app.get().split(",")[0].strip()]
+                              if entry_app.get().strip() else [])))
+    rename_btn.config(   command=lambda: rc("Rename All Notion Pages",
+                             ["notion_publisher.py", "--rename"]))
+    creative_btn.config( command=lambda: rc("Generate Creative Brief",
+                             ["creative_generator.py", "--mix", "3"]))
+    creative2_btn.config(command=lambda: rc("Generate Creative Brief for App",
+                             ["creative_generator.py"] +
+                             [a.strip() for a in entry_app.get().split(",") if a.strip()]))
+    airtable_btn.config( command=lambda: rc("Airtable Updater",
+                             ["airtable_updater.py"]))
+    dryryn_btn.config(   command=lambda: rc("Airtable Updater (dry run)",
+                             ["airtable_updater.py", "--dry-run"]))
+    clear_btn.config(    command=lambda: (log.config(state="normal"),
+                                          log.delete("1.0", tk.END),
+                                          log.config(state="disabled")))
+
+    log.config(state="normal")
+    log.insert(tk.END, f"[{ts()}] Meta Ads Intelligence Pipeline ready.\n", "success")
+    log.config(state="disabled")
+
+    root.update()
     root.mainloop()
 
 
