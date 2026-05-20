@@ -416,34 +416,39 @@ async def scrape_competitor(page, competitor: str, search_query: str, page_patte
     else:  # "order" — keep DOM order, Meta's own ranking
         rank_label = "page order (Meta's relevance)"
 
-    top = filtered[:limit]
-    print(f"  Found {len(filtered)} matched ads (from {len(ads)} total), top {len(top)} by {rank_label}:")
-    for i, ad in enumerate(top):
+    print(f"  Found {len(filtered)} matched ads (from {len(ads)} total), targeting {limit} by {rank_label}:")
+
+    # Iterate through ranked candidates until we collect `limit` ads that pass the filter.
+    # This avoids returning fewer results than requested when top candidates are the wrong format.
+    result = []
+    checked = 0
+    max_check = min(len(filtered), limit * 6)  # check up to 6× limit candidates
+
+    for ad in filtered[:max_check]:
+        if len(result) >= limit:
+            break
+
+        checked += 1
+        rank_pos = filtered.index(ad)
         if rank_by == "combined":
-            signal = (
-                f"score {ad['_score_total']}/20  "
-                f"age:{ad['_score_age']} "
-                f"order:{ad['_score_order']} "
-                f"imp:{ad['_score_impressions']} "
-                f"copies:{ad['_score_copies']}"
-            )
+            signal = (f"score {ad['_score_total']}/20  "
+                      f"age:{ad['_score_age']} order:{ad['_score_order']} "
+                      f"imp:{ad['_score_impressions']} copies:{ad['_score_copies']}")
         else:
             signal = {
                 "age":         f"started {ad.get('start_date', '?')}",
                 "impressions": f"~{ad.get('impression_text') or 'unknown'} impressions",
                 "copies":      f"{ad.get('copies', 1)} copies running",
-                "order":       f"position #{i+1} on page",
+                "order":       f"position #{rank_pos+1} on page",
             }.get(rank_by, "")
-        print(f"    {i+1}. [{signal}] {ad.get('page_name')} — {ad.get('ad_copy', '')[:60]}...")
+        print(f"  #{rank_pos+1} [{signal}] {ad.get('page_name')} — {ad.get('ad_copy', '')[:55]}...")
 
-    # For ads without an image (multi-version cards), visit the detail page to extract it
-    for ad in top:
+        # Fetch image from detail page if not already on card
         if not ad.get("image_url") and ad.get("library_id"):
             detail_url = f"https://www.facebook.com/ads/library/?id={ad['library_id']}"
             try:
                 await page.goto(detail_url, wait_until="networkidle", timeout=30000)
                 await page.wait_for_timeout(3000)
-                # Click "See ad details" to expand all creative versions
                 await page.evaluate("""() => {
                     const btn = Array.from(document.querySelectorAll('div[role=button],button'))
                         .find(b => b.innerText && /see ad detail|version/i.test(b.innerText));
@@ -451,7 +456,6 @@ async def scrape_competitor(page, competitor: str, search_query: str, page_patte
                 }""")
                 await page.wait_for_timeout(2000)
                 img_url = await page.evaluate("""() => {
-                    // Exclude profile/avatar images (t39.30808), only take ad creatives (t39.35426 / t45.5)
                     const imgs = Array.from(document.querySelectorAll('img'))
                         .filter(img => img.src
                             && img.src.includes('fbcdn')
@@ -462,31 +466,27 @@ async def scrape_competitor(page, competitor: str, search_query: str, page_patte
                 }""")
                 if img_url:
                     ad["image_url"] = img_url
-                    print(f"    [detail] Got image for {ad['library_id']}")
+                    print(f"    [detail] Got image")
                 else:
-                    print(f"    [detail] No image found for {ad['library_id']} — skipping")
+                    print(f"    [detail] No image — video, skipping")
             except Exception as e:
-                print(f"    [detail] Error fetching {ad['library_id']}: {e}")
+                print(f"    [detail] Error: {e}")
 
-    # Classify and filter by format
-    for ad in top:
         ad["ad_type"] = "static" if ad.get("image_url") else "video"
 
-    if filter_type == "static":
-        result = [a for a in top if a["ad_type"] == "static"]
-        dropped = len(top) - len(result)
-        if dropped:
-            print(f"  Dropped {dropped} video ad(s) (--filter static)")
-    elif filter_type == "video":
-        result = [a for a in top if a["ad_type"] == "video"]
-        dropped = len(top) - len(result)
-        if dropped:
-            print(f"  Dropped {dropped} static ad(s) (--filter video)")
-    else:  # combined
-        result = top
-        videos = sum(1 for a in top if a["ad_type"] == "video")
-        statics = len(top) - videos
-        print(f"  Keeping all {len(top)} ads ({statics} static, {videos} video)")
+        if filter_type == "static" and ad["ad_type"] != "static":
+            continue
+        if filter_type == "video" and ad["ad_type"] != "video":
+            continue
+
+        result.append(ad)
+
+    if filter_type == "combined":
+        videos  = sum(1 for a in result if a["ad_type"] == "video")
+        statics = len(result) - videos
+        print(f"  Collected {len(result)}/{limit} ads ({statics} static, {videos} video) after checking {checked}")
+    else:
+        print(f"  Collected {len(result)}/{limit} {filter_type} ads after checking {checked} candidates")
 
     return result
 
