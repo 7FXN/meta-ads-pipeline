@@ -22,6 +22,7 @@ Usage:
               static      (default) image/static ads only
               video       video ads only
               combined    all formats
+--no-copy-req: allow ads with no ad copy text to be uploaded (default: copy required)
 --search-by:  how to search the Ads Library — one of:
               page        (default) search by advertiser page name
               keyword     search by keywords across ad copy text
@@ -58,7 +59,7 @@ def load_env():
     return env
 
 
-def airtable_upload(ads: list[dict], competitor: str, country: str, search_by: str = "page"):
+def airtable_upload(ads: list[dict], competitor: str, country: str, search_by: str = "page", require_copy: bool = True):
     env = load_env()
     token = env.get("AIRTABLE_TOKEN")
     base_id = env.get("AIRTABLE_BASE_ID")
@@ -106,8 +107,8 @@ def airtable_upload(ads: list[dict], competitor: str, country: str, search_by: s
             print(f"  [Airtable] Skipping ad {lib_id} — missing Start Date")
             skipped += 1
             continue
-        if not ad_copy:
-            print(f"  [Airtable] Skipping ad {lib_id} — missing Ad Copy")
+        if require_copy and not ad_copy:
+            print(f"  [Airtable] Skipping ad {lib_id} — missing Ad Copy (use --no-copy-req to allow)")
             skipped += 1
             continue
 
@@ -506,6 +507,7 @@ def parse_args():
     rank_by = "combined"
     filter_type = "static"
     search_by = "page"
+    require_copy = True
     apps = []
     i = 0
     while i < len(args):
@@ -540,14 +542,17 @@ def parse_args():
                 sys.exit(1)
             search_by = val
             i += 2
+        elif args[i] == "--no-copy-req":
+            require_copy = False
+            i += 1
         else:
             apps.append(args[i])
             i += 1
-    return apps, limit, country, page_id, rank_by, filter_type, search_by
+    return apps, limit, country, page_id, rank_by, filter_type, search_by, require_copy
 
 
 async def main():
-    apps, limit, country, page_id, rank_by, filter_type, search_by = parse_args()
+    apps, limit, country, page_id, rank_by, filter_type, search_by, require_copy = parse_args()
 
     if not apps:
         print("Usage: python3 meta_ads_scraper.py [--country XX] [--limit N] [--page-id ID] [--rank-by STRATEGY] [--filter FORMAT] [--search-by METHOD] \"App Name\" ...")
@@ -611,7 +616,7 @@ async def main():
                             print(f"    Image {i+1} saved: {img_path.name}")
 
                 all_results[app] = ads
-                airtable_upload(ads, competitor=app, country=country, search_by=search_by)
+                airtable_upload(ads, competitor=app, country=country, search_by=search_by, require_copy=require_copy)
                 # Publish analysis to Notion
                 try:
                     subprocess.run(
