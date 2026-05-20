@@ -16,13 +16,15 @@ ADS_LIBRARY_PAGE_ID_URL = (
 )
 
 MEDIA_TYPE_PARAM = {
-    "static":   "&media_type=image",
+    "static":   "",                   # images + memes — no URL pre-filter, client-side drops videos
+    "images":   "&media_type=image",  # plain image ads only
+    "memes":    "&media_type=meme",   # meme/text-overlay ads only
     "video":    "&media_type=video",
     "combined": "",
 }
 
 RANK_BY_CHOICES   = ("combined", "age", "order", "impressions", "copies")
-FILTER_CHOICES    = ("static", "video", "combined")
+FILTER_CHOICES    = ("static", "images", "memes", "video", "combined")
 SEARCH_BY_CHOICES = ("page", "keyword")
 
 UA_MONTHS = {

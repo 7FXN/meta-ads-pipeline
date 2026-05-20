@@ -19,7 +19,9 @@ Usage:
               impressions highest estimated impressions first — broadest reach
               copies      most identical ad copies running simultaneously — scaling signal
 --filter:     which creative format to keep — one of:
-              static      (default) image/static ads only
+              static      (default) images + memes (all static creatives)
+              images      plain image ads only
+              memes       meme/text-overlay ads only
               video       video ads only
               combined    all formats
 --no-copy-req: allow ads with no ad copy text to be uploaded (default: copy required)
