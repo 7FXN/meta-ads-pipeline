@@ -1,33 +1,19 @@
 """
 Meta Ads Intelligence Pipeline — Telegram Bot
-
-Setup:
-  1. Add TELEGRAM_TOKEN and TELEGRAM_CHAT_ID to .env
-  2. Run: python3 telegram_bot.py
-
-Commands:
-  /scrape Duolingo
-  /scrape Duolingo US 10
-  /scrape Duolingo --filter video --limit 10 --rank-by age
-  /scrape --keyword "capsule wardrobe" --limit 5
-  /sync Duolingo
-  /sync
-  /rename
-  /brief
-  /brief Duolingo Relatio
-  /status
-  /help
+Step-by-step command flow with inline buttons.
 """
 
 import asyncio
-import subprocess
 import sys
 from pathlib import Path
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler,
+    MessageHandler, ConversationHandler, ContextTypes, filters,
+)
 
-# ── Load .env ────────────────────────────────────────────────────────────────
+# ── Config ───────────────────────────────────────────────────────────────────
 def load_env():
     env = {}
     p = Path(__file__).parent / ".env"
@@ -38,25 +24,33 @@ def load_env():
                 env[k.strip()] = v.strip()
     return env
 
-ENV = load_env()
-TOKEN   = ENV.get("TELEGRAM_TOKEN", "")
-CHAT_ID = ENV.get("TELEGRAM_CHAT_ID", "")
+ENV        = load_env()
+TOKEN      = ENV.get("TELEGRAM_TOKEN", "")
+CHAT_ID    = ENV.get("TELEGRAM_CHAT_ID", "")
 SCRIPT_DIR = Path(__file__).parent
 
-_running = False
+# Conversation states
+(S_SEARCH_BY, S_APP, S_FILTER, S_COUNTRY, S_LIMIT,
+ S_SYNC_APP, S_BRIEF_APP) = range(7)
 
 
-# ── Auth check ───────────────────────────────────────────────────────────────
 def is_owner(update: Update) -> bool:
     return str(update.effective_chat.id) == str(CHAT_ID)
 
 
-# ── Run subprocess + stream to Telegram ──────────────────────────────────────
-async def run_script(label: str, args: list, update: Update):
-    global _running
-    _running = True
+def kb(buttons: list) -> InlineKeyboardMarkup:
+    """Build inline keyboard from list of (label, callback_data) pairs."""
+    return InlineKeyboardMarkup([[InlineKeyboardButton(t, callback_data=d)] for t, d in buttons])
 
-    await update.message.reply_text(f"▶ Starting: {label}...")
+
+def kb_row(buttons: list) -> InlineKeyboardMarkup:
+    """Build inline keyboard with all buttons in one row."""
+    return InlineKeyboardMarkup([[InlineKeyboardButton(t, callback_data=d) for t, d in buttons]])
+
+
+# ── Run subprocess ────────────────────────────────────────────────────────────
+async def run_script(label: str, args: list, update: Update):
+    await update.effective_message.reply_text(f"▶ *{label}*", parse_mode="Markdown")
 
     cmd = [sys.executable, str(SCRIPT_DIR / args[0])] + args[1:]
     proc = await asyncio.create_subprocess_exec(
@@ -71,168 +65,241 @@ async def run_script(label: str, args: list, update: Update):
         if not line:
             continue
         buffer += line + "\n"
-        # Send in chunks of ~3800 chars to stay under Telegram's 4096 limit
-        if len(buffer) >= 3800:
-            await update.message.reply_text(f"```\n{buffer}```", parse_mode="Markdown")
-            buffer = ""
+        if len(buffer) >= 3500:
+            await update.effective_message.reply_text(f"```\n{buffer[:3500]}```", parse_mode="Markdown")
+            buffer = buffer[3500:]
 
     await proc.wait()
 
     if buffer.strip():
-        await update.message.reply_text(f"```\n{buffer}```", parse_mode="Markdown")
+        await update.effective_message.reply_text(f"```\n{buffer}```", parse_mode="Markdown")
 
-    status = "✓ Done" if proc.returncode == 0 else f"✗ Exit code {proc.returncode}"
-    await update.message.reply_text(status)
-    _running = False
+    result = "✓ *Done*" if proc.returncode == 0 else f"✗ Exit code {proc.returncode}"
+    await update.effective_message.reply_text(result, parse_mode="Markdown")
 
 
-# ── Command: /help ────────────────────────────────────────────────────────────
-async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update):
-        return
-    text = (
-        "*Meta Ads Intelligence Pipeline*\n\n"
-        "*Scraper*\n"
-        "`/scrape Duolingo` — scrape with defaults (US, limit 5, static)\n"
-        "`/scrape Duolingo US 10` — custom country + limit\n"
-        "`/scrape Duolingo --filter video --limit 10`\n"
-        "`/scrape --keyword \"capsule wardrobe\" --limit 5`\n\n"
-        "*Notion*\n"
-        "`/sync Duolingo` — sync one app to Notion\n"
-        "`/sync` — sync all apps to Notion\n"
-        "`/rename` — rename all Notion pages\n\n"
-        "*Creative Brief*\n"
-        "`/brief` — generate brief for all competitors\n"
-        "`/brief Duolingo Relatio` — brief for specific apps\n\n"
-        "*Other*\n"
-        "`/status` — check if a process is running\n"
-        "`/help` — show this message"
+# ══ /scrape flow ═════════════════════════════════════════════════════════════
+
+async def scrape_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update): return ConversationHandler.END
+    ctx.user_data.clear()
+    await update.message.reply_text(
+        "🔍 *New Scrape*\n\nSearch by:",
+        parse_mode="Markdown",
+        reply_markup=kb([("📄 Competitor page name", "page"), ("🔑 Keyword in ad copy", "keyword")])
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    return S_SEARCH_BY
 
+async def scrape_search_by(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    ctx.user_data["search_by"] = q.data
+    label = "competitor page name" if q.data == "page" else "keyword"
+    await q.edit_message_text(f"✅ Search by: *{q.data}*\n\nEnter {label}:", parse_mode="Markdown")
+    return S_APP
 
-# ── Command: /status ──────────────────────────────────────────────────────────
-async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update):
-        return
-    msg = "⏳ A process is currently running." if _running else "✓ Idle — no process running."
-    await update.message.reply_text(msg)
+async def scrape_app(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["app"] = update.message.text.strip()
+    await update.message.reply_text(
+        f"✅ App/Keyword: *{ctx.user_data['app']}*\n\nSelect creative format:",
+        parse_mode="Markdown",
+        reply_markup=kb([("🖼 Static (images only)", "static"),
+                         ("🎬 Video only",           "video"),
+                         ("📦 All formats",          "combined")])
+    )
+    return S_FILTER
 
+async def scrape_filter(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    ctx.user_data["filter"] = q.data
+    await q.edit_message_text(
+        f"✅ Format: *{q.data}*\n\nSelect country:",
+        parse_mode="Markdown",
+        reply_markup=kb_row([("🇺🇸 US", "US"), ("🇬🇧 UK", "GB"),
+                             ("🇺🇦 UA", "UA"), ("🌍 All", "ALL")])
+    )
+    return S_COUNTRY
 
-# ── Command: /scrape ──────────────────────────────────────────────────────────
-async def cmd_scrape(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update):
-        return
-    if _running:
-        await update.message.reply_text("⏳ Already running — wait for it to finish.")
-        return
+async def scrape_country(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    ctx.user_data["country"] = q.data
+    await q.edit_message_text(
+        f"✅ Country: *{q.data}*\n\nHow many ads? (enter a number, e.g. 5):",
+        parse_mode="Markdown"
+    )
+    return S_LIMIT
 
-    parts = ctx.args  # everything after /scrape
+async def scrape_limit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await update.message.reply_text("⚠️ Enter a number (e.g. 5):")
+        return S_LIMIT
 
-    # Defaults
-    apps      = []
-    country   = "US"
-    limit     = "5"
-    rank_by   = "combined"
-    filter_   = "static"
-    search_by = "page"
+    ctx.user_data["limit"] = text
+    d = ctx.user_data
+    summary = (
+        f"*Ready to scrape:*\n"
+        f"• App/Keyword: `{d['app']}`\n"
+        f"• Search by: `{d['search_by']}`\n"
+        f"• Format: `{d['filter']}`\n"
+        f"• Country: `{d['country']}`\n"
+        f"• Limit: `{d['limit']}`"
+    )
+    await update.message.reply_text(
+        summary,
+        parse_mode="Markdown",
+        reply_markup=kb_row([("✅ Run", "run"), ("❌ Cancel", "cancel")])
+    )
+    return S_LIMIT
 
-    # Parse flags and positional args
-    i = 0
-    while i < len(parts):
-        p = parts[i]
-        if p == "--keyword" and i + 1 < len(parts):
-            search_by = "keyword"
-            apps = [parts[i + 1]]
-            i += 2
-        elif p == "--country" and i + 1 < len(parts):
-            country = parts[i + 1]; i += 2
-        elif p == "--limit" and i + 1 < len(parts):
-            limit = parts[i + 1]; i += 2
-        elif p == "--rank-by" and i + 1 < len(parts):
-            rank_by = parts[i + 1]; i += 2
-        elif p == "--filter" and i + 1 < len(parts):
-            filter_ = parts[i + 1]; i += 2
-        elif p == "--search-by" and i + 1 < len(parts):
-            search_by = parts[i + 1]; i += 2
-        elif not p.startswith("--"):
-            # Positional: first = app, second = country, third = limit
-            if not apps:
-                apps.append(p)
-            elif country == "US" and len(p) == 2:
-                country = p.upper()
-            elif limit == "5" and p.isdigit():
-                limit = p
-            i += 1
-        else:
-            i += 1
+async def scrape_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "cancel":
+        await q.edit_message_text("❌ Cancelled.")
+        return ConversationHandler.END
 
-    if not apps:
-        await update.message.reply_text("Usage: `/scrape AppName [country] [limit]`\nExample: `/scrape Duolingo US 5`", parse_mode="Markdown")
-        return
-
+    d = ctx.user_data
+    await q.edit_message_text("⏳ Starting...")
     args = ["meta_ads_scraper.py",
-            "--country", country,
-            "--limit", limit,
-            "--rank-by", rank_by,
-            "--filter", filter_,
-            "--search-by", search_by] + apps
-
-    label = f"Scrape {', '.join(apps)} ({country}, limit {limit}, {filter_})"
-    await run_script(label, args, update)
-
-
-# ── Command: /sync ────────────────────────────────────────────────────────────
-async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update):
-        return
-    if _running:
-        await update.message.reply_text("⏳ Already running.")
-        return
-    args = ["notion_publisher.py"] + (ctx.args or [])
-    label = f"Sync {' '.join(ctx.args)}" if ctx.args else "Sync All → Notion"
-    await run_script(label, args, update)
+            "--country",   d["country"],
+            "--limit",     d["limit"],
+            "--rank-by",   "combined",
+            "--filter",    d["filter"],
+            "--search-by", d["search_by"],
+            d["app"]]
+    await run_script(f"Scraping {d['app']}", args, update)
+    return ConversationHandler.END
 
 
-# ── Command: /rename ─────────────────────────────────────────────────────────
+# ══ /sync flow ════════════════════════════════════════════════════════════════
+
+async def sync_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update): return ConversationHandler.END
+    await update.message.reply_text(
+        "🔄 *Sync to Notion*\n\nSync which app?",
+        parse_mode="Markdown",
+        reply_markup=kb([("📋 All apps", "all"), ("✏️ Enter app name", "specific")])
+    )
+    return S_SYNC_APP
+
+async def sync_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "all":
+        await q.edit_message_text("⏳ Syncing all apps...")
+        await run_script("Sync All → Notion", ["notion_publisher.py"], update)
+        return ConversationHandler.END
+    await q.edit_message_text("Enter app name:")
+    return S_SYNC_APP
+
+async def sync_app(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    app = update.message.text.strip()
+    await run_script(f"Sync {app} → Notion", ["notion_publisher.py", app], update)
+    return ConversationHandler.END
+
+
+# ══ /brief flow ═══════════════════════════════════════════════════════════════
+
+async def brief_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update): return ConversationHandler.END
+    await update.message.reply_text(
+        "✦ *Generate Creative Brief*\n\nFor which competitors?",
+        parse_mode="Markdown",
+        reply_markup=kb([("🌐 All competitors (mix 3)", "all"), ("✏️ Enter specific apps", "specific")])
+    )
+    return S_BRIEF_APP
+
+async def brief_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "all":
+        await q.edit_message_text("⏳ Generating brief...")
+        await run_script("Creative Brief — All", ["creative_generator.py", "--mix", "3"], update)
+        return ConversationHandler.END
+    await q.edit_message_text("Enter app names separated by spaces (e.g. Duolingo Relatio):")
+    return S_BRIEF_APP
+
+async def brief_apps(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    apps = update.message.text.strip().split()
+    await run_script(f"Creative Brief — {' '.join(apps)}",
+                     ["creative_generator.py"] + apps, update)
+    return ConversationHandler.END
+
+
+# ══ Simple commands ══════════════════════════════════════════════════════════
+
 async def cmd_rename(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update):
-        return
-    if _running:
-        await update.message.reply_text("⏳ Already running.")
-        return
+    if not is_owner(update): return
     await run_script("Rename All Notion Pages", ["notion_publisher.py", "--rename"], update)
 
+async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update): return
+    await update.message.reply_text(
+        "*Meta Ads Intelligence Pipeline*\n\n"
+        "/scrape — step-by-step scraper setup\n"
+        "/sync — sync to Notion (all or one app)\n"
+        "/brief — generate AI creative brief\n"
+        "/rename — rename all Notion pages\n"
+        "/cancel — cancel current flow\n"
+        "/help — show this message",
+        parse_mode="Markdown"
+    )
 
-# ── Command: /brief ───────────────────────────────────────────────────────────
-async def cmd_brief(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update):
-        return
-    if _running:
-        await update.message.reply_text("⏳ Already running.")
-        return
-    args = ["creative_generator.py"] + (ctx.args or ["--mix", "3"])
-    label = f"Creative Brief — {' '.join(ctx.args)}" if ctx.args else "Creative Brief — All"
-    await run_script(label, args, update)
+async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update): return ConversationHandler.END
+    await update.message.reply_text("❌ Cancelled.")
+    return ConversationHandler.END
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    if not TOKEN:
-        print("ERROR: TELEGRAM_TOKEN not set in .env")
-        sys.exit(1)
-    if not CHAT_ID:
-        print("ERROR: TELEGRAM_CHAT_ID not set in .env")
+    if not TOKEN or not CHAT_ID:
+        print("ERROR: TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not set in .env")
         sys.exit(1)
 
     app = Application.builder().token(TOKEN).build()
+
+    scrape_conv = ConversationHandler(
+        entry_points=[CommandHandler("scrape", scrape_start)],
+        states={
+            S_SEARCH_BY: [CallbackQueryHandler(scrape_search_by)],
+            S_APP:       [MessageHandler(filters.TEXT & ~filters.COMMAND, scrape_app)],
+            S_FILTER:    [CallbackQueryHandler(scrape_filter)],
+            S_COUNTRY:   [CallbackQueryHandler(scrape_country)],
+            S_LIMIT:     [MessageHandler(filters.TEXT & ~filters.COMMAND, scrape_limit),
+                          CallbackQueryHandler(scrape_confirm)],
+        },
+        fallbacks=[CommandHandler("cancel", cmd_cancel)],
+    )
+
+    sync_conv = ConversationHandler(
+        entry_points=[CommandHandler("sync", sync_start)],
+        states={
+            S_SYNC_APP: [CallbackQueryHandler(sync_choice),
+                         MessageHandler(filters.TEXT & ~filters.COMMAND, sync_app)],
+        },
+        fallbacks=[CommandHandler("cancel", cmd_cancel)],
+    )
+
+    brief_conv = ConversationHandler(
+        entry_points=[CommandHandler("brief", brief_start)],
+        states={
+            S_BRIEF_APP: [CallbackQueryHandler(brief_choice),
+                          MessageHandler(filters.TEXT & ~filters.COMMAND, brief_apps)],
+        },
+        fallbacks=[CommandHandler("cancel", cmd_cancel)],
+    )
+
+    app.add_handler(scrape_conv)
+    app.add_handler(sync_conv)
+    app.add_handler(brief_conv)
+    app.add_handler(CommandHandler("rename", cmd_rename))
     app.add_handler(CommandHandler("start",  cmd_help))
     app.add_handler(CommandHandler("help",   cmd_help))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("scrape", cmd_scrape))
-    app.add_handler(CommandHandler("sync",   cmd_sync))
-    app.add_handler(CommandHandler("rename", cmd_rename))
-    app.add_handler(CommandHandler("brief",  cmd_brief))
+    app.add_handler(CommandHandler("cancel", cmd_cancel))
 
     print("Bot is running. Send /help in Telegram.")
     app.run_polling(drop_pending_updates=True)
