@@ -157,18 +157,24 @@ def airtable_upload(ads: list[dict], competitor: str, country: str, search_by: s
 ADS_LIBRARY_URL = (
     "https://www.facebook.com/ads/library/"
     "?active_status=active&ad_type=all&country={country}"
-    "&q={query}&search_type=page"
+    "&q={query}&search_type=page{media_type}"
 )
 ADS_LIBRARY_KEYWORD_URL = (
     "https://www.facebook.com/ads/library/"
     "?active_status=active&ad_type=all&country={country}"
-    "&q={query}&search_type=keyword_unordered"
+    "&q={query}&search_type=keyword_unordered{media_type}"
 )
 ADS_LIBRARY_PAGE_ID_URL = (
     "https://www.facebook.com/ads/library/"
     "?active_status=active&ad_type=all&country=ALL"
-    "&view_all_page_id={page_id}"
+    "&view_all_page_id={page_id}{media_type}"
 )
+
+MEDIA_TYPE_PARAM = {
+    "static":   "&media_type=image",
+    "video":    "&media_type=video",
+    "combined": "",
+}
 
 # Ukrainian month abbreviations → month number for sorting
 UA_MONTHS = {
@@ -368,12 +374,13 @@ async def download_image(url: str, dest: Path):
 
 
 async def scrape_competitor(page, competitor: str, search_query: str, page_patterns: list, limit: int = 6, country: str = "US", page_id: str = None, rank_by: str = "age", filter_type: str = "static", search_by: str = "page") -> list[dict]:
+    mt = MEDIA_TYPE_PARAM.get(filter_type, "")
     if page_id:
-        url = ADS_LIBRARY_PAGE_ID_URL.format(page_id=page_id)
+        url = ADS_LIBRARY_PAGE_ID_URL.format(page_id=page_id, media_type=mt)
     elif search_by == "keyword":
-        url = ADS_LIBRARY_KEYWORD_URL.format(query=search_query.replace(" ", "+"), country=country)
+        url = ADS_LIBRARY_KEYWORD_URL.format(query=search_query.replace(" ", "+"), country=country, media_type=mt)
     else:
-        url = ADS_LIBRARY_URL.format(query=search_query.replace(" ", "+"), country=country)
+        url = ADS_LIBRARY_URL.format(query=search_query.replace(" ", "+"), country=country, media_type=mt)
     print(f"\n[{competitor}] {url}")
 
     await page.goto(url, wait_until="networkidle", timeout=60000)
